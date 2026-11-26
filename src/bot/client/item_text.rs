@@ -446,10 +446,17 @@ pub(super) fn parse_bed_remaining_secs_from_text(all_text: &str) -> Option<u64> 
         }
     }
     // Match textual variants like "1m 5s"
-    if let Ok(minute_second_re) =
+    // Compiled once: this runs on the bed-snipe path right before the click is
+    // scheduled, and compiling both patterns per call cost ~0.4 ms.
+    static MINUTE_SECOND_RE: Lazy<regex::Regex> = Lazy::new(|| {
         regex::Regex::new(r"(?i)\b(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)\s*s(?:ec(?:ond)?s?)?\b")
+            .expect("valid regex")
+    });
+    static SECOND_ONLY_RE: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"(?i)\b(\d+)\s*s(?:ec(?:ond)?s?)?\b").expect("valid regex")
+    });
     {
-        if let Some(caps) = minute_second_re.captures(all_text) {
+        if let Some(caps) = MINUTE_SECOND_RE.captures(all_text) {
             if let (Some(m), Some(s)) = (caps.get(1), caps.get(2)) {
                 if let (Ok(m), Ok(s)) = (m.as_str().parse::<u64>(), s.as_str().parse::<u64>()) {
                     if s < 60 {
@@ -460,8 +467,8 @@ pub(super) fn parse_bed_remaining_secs_from_text(all_text: &str) -> Option<u64> 
         }
     }
     // Match seconds-only variants like "59s" / "59 sec"
-    if let Ok(second_only_re) = regex::Regex::new(r"(?i)\b(\d+)\s*s(?:ec(?:ond)?s?)?\b") {
-        if let Some(caps) = second_only_re.captures(all_text) {
+    {
+        if let Some(caps) = SECOND_ONLY_RE.captures(all_text) {
             if let Some(s) = caps.get(1) {
                 if let Ok(s) = s.as_str().parse::<u64>() {
                     return Some(s);

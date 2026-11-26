@@ -197,6 +197,6 @@ pub fn finish_update_restart() -> ! {
             tracing::error!("[Update] Failed to write swap script — restarting without swap");
         }
         // Exit so the .bat can replace the locked binary and relaunch it.
-        std::process::exit(0);
+        crate::logging::exit_process(0);
     }
 }

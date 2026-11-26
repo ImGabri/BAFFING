@@ -390,10 +390,31 @@ fn print_startup_banner() {
     println!("{D}   v{VERSION}{R}");
 }
 
+/// Sleep up to `ms`, returning early (with `true`) the moment a Critical
+/// command (an AH buy) is waiting. Wakes on the queue's enqueue notification
+/// instead of polling, so a buy is picked up immediately rather than on the
+/// next poll tick.
+async fn rest_unless_critical(queue: &CommandQueue, ms: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
+    loop {
+        // Register before checking so an enqueue in between is not missed.
+        let woke = queue.notified();
+        tokio::pin!(woke);
+        if queue.critical_queued() {
+            return true;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => return false,
+            _ = &mut woke => {}
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
     init_logger()?;
+    let _flush_logs_on_exit = frikadellen_baf::logging::FlushLogsOnDrop;
 
     // When this process is a managed VPS instance the backend launches it with a
     // vps_secret plus the owning user/instance identity in the environment. In
@@ -1773,7 +1794,7 @@ async fn main() -> Result<()> {
                         } else {
                             error!("Ban detected in chat: {} (notification suppressed, terminating process)", clean);
                         }
-                        std::process::exit(1);
+                        frikadellen_baf::logging::exit_process(1);
                     }
 
                     // SkyBlock maintenance. While Hypixel has SkyBlock closed, a
@@ -2059,7 +2080,7 @@ async fn main() -> Result<()> {
                             error!("Ban detected (notification suppressed) — terminating process");
                         }
                         // Terminate immediately so we don't reconnect and re-send the webhook
-                        std::process::exit(1);
+                        frikadellen_baf::logging::exit_process(1);
                     }
                 }
                 frikadellen_baf::bot::BotEvent::Kicked(reason) => {
@@ -2079,7 +2100,7 @@ async fn main() -> Result<()> {
                     print_mc_chat(&baf_msg);
                     let _ = chat_tx_events.send(baf_msg);
                     // Terminate — the bot can't flip without a cookie
-                    std::process::exit(1);
+                    frikadellen_baf::logging::exit_process(1);
                 }
                 frikadellen_baf::bot::BotEvent::StartupComplete { orders_cancelled } => {
                     info!("[Startup] Startup complete - bot is ready to flip! ({} order(s) cancelled)", orders_cancelled);
@@ -3333,6 +3354,21 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
+                    // Queue the buy FIRST. The console/panel announcement and the
+                    // tracker insert below used to run before this, and console
+                    // writes can take milliseconds (especially on Windows). The
+                    // tracker is only read on "You purchased", which arrives long
+                    // after this, so inserting it second is safe.
+                    // Buy-speed start time is set in execute_command when
+                    // /viewauction is sent (command-send → coins-in-escrow).
+                    let received_at = Instant::now();
+                    flip_diag_ws.record_accepted();
+                    command_queue_clone.enqueue(
+                        CommandType::PurchaseAuction { flip: flip.clone() },
+                        CommandPriority::Critical,
+                        false, // Not interruptible
+                    );
+
                     // Print colorful flip announcement (item name keeps its rarity color code)
                     let profit = flip.target.saturating_sub(flip.starting_bid);
                     let baf_msg = format!(
@@ -3350,21 +3386,9 @@ async fn main() -> Result<()> {
                         let key = frikadellen_baf::utils::remove_minecraft_colors(&flip.item_name)
                             .to_lowercase();
                         if let Ok(mut tracker) = flip_tracker_ws.lock() {
-                            let now = Instant::now();
-                            tracker.insert(key, (flip.clone(), 0, now, now));
+                            tracker.insert(key, (flip, 0, received_at, received_at));
                         }
                     }
-
-                    // Queue the flip command
-                    // Buy-speed start time is now set in execute_command when
-                    // /viewauction is sent, so the measurement covers the
-                    // relevant path: command-send → coins-in-escrow.
-                    flip_diag_ws.record_accepted();
-                    command_queue_clone.enqueue(
-                        CommandType::PurchaseAuction { flip },
-                        CommandPriority::Critical,
-                        false, // Not interruptible
-                    );
                 }
                 CoflEvent::BazaarFlip(bazaar_flip) => {
                     // Skip if bazaar flips are disabled
@@ -4617,7 +4641,7 @@ async fn main() -> Result<()> {
                             cmd.command_type
                         );
                         command_queue_processor.complete_current();
-                        sleep(Duration::from_millis(250)).await;
+                        rest_unless_critical(&command_queue_processor, 250).await;
                         continue;
                     }
                 }
@@ -4644,7 +4668,7 @@ async fn main() -> Result<()> {
                         );
                     }
                     command_queue_processor.complete_current();
-                    sleep(Duration::from_millis(50)).await;
+                    rest_unless_critical(&command_queue_processor, 50).await;
                     continue;
                 }
 
@@ -4661,7 +4685,7 @@ async fn main() -> Result<()> {
                         cmd.command_type
                     );
                     command_queue_processor.complete_current();
-                    sleep(Duration::from_millis(50)).await;
+                    rest_unless_critical(&command_queue_processor, 50).await;
                     continue;
                 }
 
@@ -4775,7 +4799,7 @@ async fn main() -> Result<()> {
                                 false,
                             );
                         }
-                        sleep(Duration::from_millis(50)).await;
+                        rest_unless_critical(&command_queue_processor, 50).await;
                         continue;
                     }
                 }
@@ -4791,7 +4815,7 @@ async fn main() -> Result<()> {
                 {
                     debug!("[Queue] Deferring ClaimPurchasedItem — inventory near full, prioritizing selling");
                     command_queue_processor.complete_current();
-                    sleep(Duration::from_millis(50)).await;
+                    rest_unless_critical(&command_queue_processor, 50).await;
                     continue;
                 }
 
@@ -4810,7 +4834,7 @@ async fn main() -> Result<()> {
                         cmd.command_type
                     );
                     command_queue_processor.complete_current();
-                    sleep(Duration::from_millis(50)).await;
+                    rest_unless_critical(&command_queue_processor, 50).await;
                     continue;
                 }
 
@@ -4826,7 +4850,7 @@ async fn main() -> Result<()> {
                         cmd.command_type
                     );
                     command_queue_processor.complete_current();
-                    sleep(Duration::from_millis(50)).await;
+                    rest_unless_critical(&command_queue_processor, 50).await;
                     continue;
                 }
 
@@ -4869,7 +4893,19 @@ async fn main() -> Result<()> {
                     // 25 ms, not 250: a Critical buy queued mid-command waited up
                     // to a full poll period before this loop re-checked state or
                     // preemption (part of the 22% of buys >100 ms to /viewauction).
-                    sleep(Duration::from_millis(25)).await;
+                    // Also wake the moment something is queued, so a Critical
+                    // buy preempts an interruptible command without waiting
+                    // out the rest of the 25 ms tick.
+                    {
+                        let woke = command_queue_processor.notified();
+                        tokio::pin!(woke);
+                        if !command_queue_processor.critical_queued() {
+                            tokio::select! {
+                                _ = sleep(Duration::from_millis(25)) => {}
+                                _ = &mut woke => {}
+                            }
+                        }
+                    }
                     let idle = bot_client_clone.state().allows_commands();
                     seen_busy |= !idle;
                     let finished =
@@ -4924,19 +4960,11 @@ async fn main() -> Result<()> {
                     } else {
                         command_delay_ms
                     };
-                    const REST_STEP_MS: u64 = 20;
-                    let mut waited = 0u64;
-                    while waited < delay {
-                        if command_queue_processor.critical_queued() {
-                            debug!(
-                                "[Queue] Critical command waiting — cutting {}ms rest short after {}ms",
-                                delay, waited
-                            );
-                            break;
-                        }
-                        let step = REST_STEP_MS.min(delay - waited);
-                        sleep(Duration::from_millis(step)).await;
-                        waited += step;
+                    if rest_unless_critical(&command_queue_processor, delay).await {
+                        debug!(
+                            "[Queue] Critical command waiting — cut {}ms rest short",
+                            delay
+                        );
                     }
                 }
             } else {
@@ -5020,7 +5048,7 @@ async fn main() -> Result<()> {
             let input = line.trim();
             if input == "__SHUTDOWN__" {
                 info!("Received Ctrl+C — shutting down BAF...");
-                std::process::exit(0);
+                frikadellen_baf::logging::exit_process(0);
             }
             if input.is_empty() {
                 continue;
@@ -6616,11 +6644,59 @@ async fn main() -> Result<()> {
         total_secs,
         total_secs as f64 / 3600.0
     );
-    std::process::exit(0);
+    frikadellen_baf::logging::exit_process(0);
 }
 
 #[cfg(test)]
 mod tests {
+
+    fn test_buy() -> frikadellen_baf::types::CommandType {
+        frikadellen_baf::types::CommandType::PurchaseAuction {
+            flip: frikadellen_baf::types::Flip {
+                item_name: "Diamond".into(),
+                starting_bid: 800,
+                target: 1000,
+                finder: None,
+                profit_perc: None,
+                purchase_at_ms: None,
+                uuid: Some("abc".into()),
+                list_at: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn rest_wakes_immediately_when_a_buy_is_queued() {
+        let q = frikadellen_baf::state::CommandQueue::new();
+        let q2 = q.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            q2.enqueue(
+                test_buy(),
+                frikadellen_baf::types::CommandPriority::Critical,
+                false,
+            );
+        });
+        let started = std::time::Instant::now();
+        assert!(
+            super::rest_unless_critical(&q, 2_000).await,
+            "rest should be cut short"
+        );
+        let waited = started.elapsed();
+        assert!(
+            waited < std::time::Duration::from_millis(200),
+            "buy should be picked up right away, waited {waited:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rest_runs_full_length_without_a_buy() {
+        let q = frikadellen_baf::state::CommandQueue::new();
+        let started = std::time::Instant::now();
+        assert!(!super::rest_unless_critical(&q, 60).await);
+        assert!(started.elapsed() >= std::time::Duration::from_millis(60));
+    }
+
     use super::{
         current_skyblock_area, is_ban_disconnect, is_direct_address, island_guard_route,
         mark_activity, note_maintenance, parse_bz_list_flip_detail, parse_cofl_bz_h_total_profit,

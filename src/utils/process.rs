@@ -1,4 +1,4 @@
-use tracing::{error, info};
+use tracing::info;
 
 /// Restart the current process by re-executing the binary.
 ///
@@ -18,19 +18,22 @@ pub fn restart_process() -> ! {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        // exec() skips destructors, so write out queued log lines first.
+        crate::logging::flush_logs();
         // exec() replaces the current process image — PID stays the same
         let err = std::process::Command::new(&exe).args(&args).exec();
         // exec() only returns on error
-        error!("[Restart] Failed to exec: {}", err);
+        // Logging is already flushed, so report the failure on stderr too.
+        eprintln!("[Restart] Failed to exec: {}", err);
         std::process::exit(1);
     }
     #[cfg(not(unix))]
     {
         match std::process::Command::new(&exe).args(&args).spawn() {
-            Ok(_) => std::process::exit(0),
+            Ok(_) => crate::logging::exit_process(0),
             Err(e) => {
-                error!("[Restart] Failed to spawn new process: {}", e);
-                std::process::exit(1);
+                tracing::error!("[Restart] Failed to spawn new process: {}", e);
+                crate::logging::exit_process(1);
             }
         }
     }

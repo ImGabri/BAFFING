@@ -1677,7 +1677,7 @@ async fn kill_session(State(s): State<WebSharedState>) -> impl IntoResponse {
             )
             .await;
         }
-        std::process::exit(0);
+        crate::logging::exit_process(0);
     });
     (StatusCode::OK, "Killing session — process will terminate")
 }
