@@ -445,7 +445,10 @@ impl CoflWebSocket {
         // finder instead of Coflnet (finder-only mode), its messages are
         // {type:'flip', flip:{…}} / welcome / filters / pong — translate flips
         // into the normal pipeline and ignore the rest quietly.
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        // Parse once; both protocols below work from this value.
+        let v: serde_json::Value =
+            serde_json::from_str(text).context("Failed to parse WebSocket message")?;
+        {
             match v.get("type").and_then(|t| t.as_str()) {
                 Some("flip") if v.get("flip").is_some() => {
                     let f = &v["flip"];
@@ -481,9 +484,7 @@ impl CoflWebSocket {
         }
 
         let msg: WebSocketMessage =
-            serde_json::from_str(text).context("Failed to parse WebSocket message")?;
-
-        info!("[COFL <-] type={} data={}", msg.msg_type, msg.data);
+            serde_json::from_value(v).context("Failed to parse WebSocket message")?;
 
         match msg.msg_type.as_str() {
             "loggedIn" => {

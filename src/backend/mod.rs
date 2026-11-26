@@ -606,7 +606,7 @@ fn execute_command(action: &str, args: Option<&Value>, deps: &BackendDeps) -> (b
             warn!("[Backend] shutdown requested by operator — exiting");
             std::thread::spawn(|| {
                 std::thread::sleep(Duration::from_millis(500));
-                std::process::exit(0);
+                crate::logging::exit_process(0);
             });
             (true, "shutting down".to_string())
         }

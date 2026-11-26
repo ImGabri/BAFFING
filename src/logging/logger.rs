@@ -67,6 +67,15 @@ pub fn init_logger() -> Result<()> {
 
     // Create file appender
     let file_appender = RollingFileAppender::new(Rotation::NEVER, &logs_dir, "latest.log");
+    // Write the log file from a background thread. Every COFL message is logged
+    // in full, and doing that write inline put a disk write in front of every
+    // flip. `lossy(false)` makes a full queue wait instead of dropping lines.
+    let (file_writer, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+        .lossy(false)
+        .finish(file_appender);
+    if let Ok(mut slot) = LOG_GUARD.lock() {
+        *slot = Some(guard);
+    }
 
     // Create filter with specific rules to suppress noise.
     // Azalea library crates emit harmless errors & warnings (e.g. set_equipment
@@ -87,7 +96,7 @@ pub fn init_logger() -> Result<()> {
         )
         .with(
             fmt::layer()
-                .with_writer(file_appender)
+                .with_writer(file_writer)
                 .with_ansi(false)
                 .with_target(true),
         )
@@ -98,6 +107,35 @@ pub fn init_logger() -> Result<()> {
         logs_dir.join("latest.log")
     );
     Ok(())
+}
+
+/// Keeps the background log writer alive; dropping it flushes queued lines.
+static LOG_GUARD: std::sync::Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> =
+    std::sync::Mutex::new(None);
+
+/// Write out any log lines still queued for the background writer. Call this
+/// right before the process exits or re-execs itself, which skips destructors.
+/// Logging to the file stops after this, so only use it on the way out.
+pub fn flush_logs() {
+    if let Ok(mut slot) = LOG_GUARD.lock() {
+        slot.take();
+    }
+}
+
+/// Flushes the log file when dropped. Hold one for the lifetime of `main` so a
+/// normal return (or a panic unwinding out of main) still writes the last lines.
+pub struct FlushLogsOnDrop;
+
+impl Drop for FlushLogsOnDrop {
+    fn drop(&mut self) {
+        flush_logs();
+    }
+}
+
+/// Flush the log file, then exit. Use instead of `std::process::exit`.
+pub fn exit_process(code: i32) -> ! {
+    flush_logs();
+    std::process::exit(code)
 }
 
 pub fn get_logs_dir() -> PathBuf {

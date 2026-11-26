@@ -79,11 +79,23 @@ impl CommandQueue {
 
         let mut queue = self.queue.write();
 
-        // Find insertion point based on priority
-        let pos = queue
-            .iter()
-            .position(|c| c.priority > priority)
-            .unwrap_or(queue.len());
+        // Find insertion point based on priority. AH buys go ahead of every
+        // other queued command, Critical ones included (manual panel actions,
+        // listings, claims): a snipe is only worth anything in the first few
+        // hundred ms, while those can run a moment later. Buys stay in arrival
+        // order among themselves.
+        let is_buy = matches!(command_type, CommandType::PurchaseAuction { .. });
+        let pos = if is_buy {
+            queue
+                .iter()
+                .position(|c| !matches!(c.command_type, CommandType::PurchaseAuction { .. }))
+                .unwrap_or(queue.len())
+        } else {
+            queue
+                .iter()
+                .position(|c| c.priority > priority)
+                .unwrap_or(queue.len())
+        };
 
         queue.insert(pos, cmd);
 
@@ -184,14 +196,16 @@ impl CommandQueue {
         self.queue.read().front().cloned()
     }
 
-    /// True when a Critical command (an AH buy) is waiting in the queue. The
-    /// processor loop polls this during the inter-command rest so a buy never
-    /// sits through the 200-800 ms anti-spam delay of the previous command.
+    /// True when an AH buy is waiting in the queue. The processor uses this to
+    /// cut the inter-command rest short so a buy never sits through the
+    /// anti-spam delay of the previous command. Only buys count: other Critical
+    /// commands (e.g. a panel-triggered listing) must still respect the rest,
+    /// or back-to-back listings risk "Sending packets too fast" kicks.
     pub fn critical_queued(&self) -> bool {
         self.queue
             .read()
             .front()
-            .is_some_and(|c| c.priority == CommandPriority::Critical)
+            .is_some_and(|c| matches!(c.command_type, CommandType::PurchaseAuction { .. }))
     }
 
     /// Clear all bazaar orders from queue
@@ -419,6 +433,36 @@ mod tests {
         assert!(q.critical_queued());
         // once the buy is running it is no longer "waiting"
         let _ = q.start_current();
+        assert!(!q.critical_queued());
+    }
+
+    #[test]
+    fn buy_jumps_ahead_of_other_critical_commands() {
+        let q = CommandQueue::new();
+        q.enqueue(dummy_manage_orders(), CommandPriority::Critical, false);
+        q.enqueue(dummy_bazaar_buy(), CommandPriority::Normal, true);
+        q.enqueue(dummy_purchase_auction(), CommandPriority::Critical, false);
+        let first = q.start_current().unwrap();
+        assert!(matches!(
+            first.command_type,
+            CommandType::PurchaseAuction { .. }
+        ));
+    }
+
+    #[test]
+    fn buys_keep_arrival_order_among_themselves() {
+        let q = CommandQueue::new();
+        let first = q.enqueue(dummy_purchase_auction(), CommandPriority::Critical, false);
+        let second = q.enqueue(dummy_purchase_auction(), CommandPriority::Critical, false);
+        assert_eq!(q.start_current().unwrap().id, first);
+        q.complete_current();
+        assert_eq!(q.start_current().unwrap().id, second);
+    }
+
+    #[test]
+    fn other_critical_commands_do_not_cut_the_rest_short() {
+        let q = CommandQueue::new();
+        q.enqueue(dummy_manage_orders(), CommandPriority::Critical, false);
         assert!(!q.critical_queued());
     }
 
