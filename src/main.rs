@@ -4266,6 +4266,19 @@ async fn main() -> Result<()> {
                                         continue;
                                     }
 
+                                    // Hypixel already refused this exact item ("You cannot
+                                    // auction this item!"): don't burn ~9 s of queue on it again.
+                                    if item_id
+                                        .as_deref()
+                                        .is_some_and(frikadellen_baf::bot::is_unauctionable)
+                                    {
+                                        info!(
+                                            "[createAuction] Skipping \"{}\" — Hypixel refused to auction it earlier this session",
+                                            item_name
+                                        );
+                                        continue;
+                                    }
+
                                     let cmd = CommandType::SellToAuction {
                                         item_name,
                                         starting_bid: price,

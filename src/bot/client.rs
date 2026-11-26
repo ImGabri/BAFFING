@@ -157,6 +157,24 @@ const AUCTION_RETRY_AFTER_STUCK_ITEM_MS: u64 = 2000;
 /// slot!" keeps recurring.  After this many retries the bot gives up and goes Idle
 /// instead of looping indefinitely and risking a "Sending packets too fast!" kick.
 const MAX_AUCTION_STUCK_ITEM_RETRIES: u8 = 3;
+
+/// Item UUIDs Hypixel refused with "You cannot auction this item!" (soulbound,
+/// untradeable, ...). COFL keeps re-sending createAuction for them every ~20 s,
+/// and each attempt blocks the command queue for ~9 s, so they are skipped for
+/// the rest of this process. In memory only: a restart retries them once.
+static UNAUCTIONABLE_ITEM_IDS: once_cell::sync::Lazy<
+    parking_lot::Mutex<std::collections::HashSet<String>>,
+> = once_cell::sync::Lazy::new(Default::default);
+
+/// Remember that Hypixel refused to auction this item UUID.
+pub fn mark_unauctionable(item_id: &str) -> bool {
+    UNAUCTIONABLE_ITEM_IDS.lock().insert(item_id.to_string())
+}
+
+/// True when Hypixel already refused to auction this item UUID.
+pub fn is_unauctionable(item_id: &str) -> bool {
+    UNAUCTIONABLE_ITEM_IDS.lock().contains(item_id)
+}
 /// When `auction_slot_blocked` is set after exhausting stuck-item retries,
 /// this flag prevents further SellToAuction attempts until it is cleared
 /// (e.g. by a successful ClaimSold cycle that frees the slot).
@@ -2247,6 +2265,32 @@ async fn event_handler(bot: Client, event: Event, state: BotClientState) -> Resu
                         });
                     }
                 }
+            } else if clean_message.starts_with("You cannot auction this item")
+                && *state.bot_state.read() == BotState::Selling
+            {
+                // Hypixel refuses this item outright (soulbound/untradeable). Continuing
+                // the flow only clicks through price/duration/confirm into a 5 s watchdog
+                // timeout, and COFL re-requests it forever. Abort now and remember it.
+                state.auction_sell_aborted.store(true, Ordering::Relaxed);
+                let item = state.auction_item_name.read().clone();
+                match state.auction_item_id.read().as_deref() {
+                    Some(id) => {
+                        mark_unauctionable(id);
+                        warn!(
+                            "[Auction] ABORTING: Hypixel won't auction \"{}\" ({}) — skipping it until restart",
+                            item, id
+                        );
+                    }
+                    None => warn!(
+                        "[Auction] ABORTING: Hypixel won't auction \"{}\" (no item id to remember)",
+                        item
+                    ),
+                }
+                let window_id = *state.last_window_id.read();
+                if window_id > 0 {
+                    send_raw_close(&bot, window_id, &state.handlers);
+                }
+                *state.bot_state.write() = BotState::Idle;
             } else if clean_message.contains("You already have an item in the auction slot") {
                 // Hypixel rejected our item placement — there was already an item in the slot.
                 // Close the window (returning the stuck item to inventory) and retry the flow,
@@ -9083,6 +9127,21 @@ fn extract_viewauction_uuid(msg: &str) -> Option<String> {
         None
     } else {
         Some(uuid)
+    }
+}
+
+#[cfg(test)]
+mod unauctionable_tests {
+    use super::{is_unauctionable, mark_unauctionable};
+
+    #[test]
+    fn refused_item_ids_are_remembered_per_id() {
+        let id = "test-unauctionable-0f1e2d3c";
+        assert!(!is_unauctionable(id));
+        assert!(mark_unauctionable(id), "first mark inserts");
+        assert!(!mark_unauctionable(id), "second mark is a no-op");
+        assert!(is_unauctionable(id));
+        assert!(!is_unauctionable("test-some-other-item"));
     }
 }
 
