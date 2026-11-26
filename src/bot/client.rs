@@ -157,6 +157,9 @@ const AUCTION_RETRY_AFTER_STUCK_ITEM_MS: u64 = 2000;
 /// slot!" keeps recurring.  After this many retries the bot gives up and goes Idle
 /// instead of looping indefinitely and risking a "Sending packets too fast!" kick.
 const MAX_AUCTION_STUCK_ITEM_RETRIES: u8 = 3;
+/// How long to wait for the bazaar item page after clicking a search result
+/// before clicking it once more (Hypixel sometimes ignores the first click).
+const BAZAAR_ITEM_RECLICK_MS: u64 = 1000;
 
 /// Item UUIDs Hypixel refused with "You cannot auction this item!" (soulbound,
 /// untradeable, ...). COFL keeps re-sending createAuction for them every ~20 s,
@@ -4561,6 +4564,30 @@ async fn handle_window_interaction(
                         info!("[Bazaar] Found item at slot {}", i);
                         // Click the instant the item is detected — no fixed delay.
                         click_window_slot(bot, &state.last_window_id, window_id, i as i16).await;
+
+                        // Hypixel ignores ~9% of these clicks (29 of 322 in live logs,
+                        // timing identical to the ones that work) and the item page never
+                        // opens, which used to cost the full 5 s GUI watchdog. Re-click
+                        // once after 1 s, like a player would, if nothing has happened.
+                        let retry_at = tokio::time::Instant::now()
+                            + tokio::time::Duration::from_millis(BAZAAR_ITEM_RECLICK_MS);
+                        while tokio::time::Instant::now() < retry_at {
+                            if *state.last_window_id.read() != window_id {
+                                return; // item page (or something else) opened
+                            }
+                            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                        }
+                        if *state.last_window_id.read() == window_id
+                            && *state.bazaar_step.read() == BazaarStep::SearchResults
+                            && *state.bot_state.read() == BotState::Bazaar
+                        {
+                            warn!(
+                                "[Bazaar] Item page did not open {}ms after clicking slot {} — clicking once more",
+                                BAZAAR_ITEM_RECLICK_MS, i
+                            );
+                            click_window_slot(bot, &state.last_window_id, window_id, i as i16)
+                                .await;
+                        }
                     }
                     None => {
                         warn!(
