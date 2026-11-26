@@ -175,6 +175,63 @@ pub fn mark_unauctionable(item_id: &str) -> bool {
 pub fn is_unauctionable(item_id: &str) -> bool {
     UNAUCTIONABLE_ITEM_IDS.lock().contains(item_id)
 }
+
+/// How long after a sell offer is set up an identical sell request is treated as
+/// a duplicate. COFL decides what to sell from the inventory snapshot, which is
+/// uploaded about once a minute, so for up to ~80 s after the items went into
+/// escrow it keeps recommending the same sell. Each such attempt opened the
+/// bazaar, clicked "Create Sell Offer" with nothing to sell and blocked the queue
+/// for the 5 s GUI watchdog.
+const DUPLICATE_SELL_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// (amount, set up at) of sell offers placed recently, keyed by `sell_offer_key`.
+static RECENT_SELL_OFFERS: once_cell::sync::Lazy<
+    parking_lot::Mutex<HashMap<String, (u64, std::time::Instant)>>,
+> = once_cell::sync::Lazy::new(Default::default);
+
+/// Comparable item name: colour codes and the private-use icon glyph COFL
+/// prefixes to some names (e.g. "\u{e003} Fine Sapphire Gemstone") removed.
+fn sell_offer_key(item_name: &str) -> String {
+    remove_mc_colors(item_name)
+        .chars()
+        .filter(|c| !('\u{e000}'..='\u{f8ff}').contains(c))
+        .collect::<String>()
+        .trim()
+        .to_lowercase()
+}
+
+/// Record a sell offer that Hypixel accepted.
+fn note_sell_offer_placed(item_name: &str, amount: u64) {
+    RECENT_SELL_OFFERS.lock().insert(
+        sell_offer_key(item_name),
+        (amount, std::time::Instant::now()),
+    );
+}
+
+/// True when the same item and amount were put up for sale moments ago, so the
+/// items are in escrow and this request can only fail.
+fn is_duplicate_sell(item_name: &str, amount: u64) -> bool {
+    let mut recent = RECENT_SELL_OFFERS.lock();
+    recent.retain(|_, (_, at)| at.elapsed() < DUPLICATE_SELL_WINDOW);
+    recent
+        .get(&sell_offer_key(item_name))
+        .is_some_and(|(placed_amount, _)| *placed_amount == amount)
+}
+
+/// Items of that kind are back in the inventory, so selling them is valid again:
+/// a cancelled sell offer ("Cancelled! Refunded 28x Fine Sapphire Gemstone from
+/// cancelling Sell Offer!") or a claimed buy order ("[Bazaar] Claimed 4x ...").
+fn forget_refunded_sell_offers(clean_message: &str) {
+    let refunded = clean_message.contains("Refunded") && clean_message.contains("Sell Offer");
+    let claimed = clean_message.contains("[Bazaar] Claimed");
+    if !refunded && !claimed {
+        return;
+    }
+    let message = sell_offer_key(clean_message);
+    RECENT_SELL_OFFERS
+        .lock()
+        .retain(|key, _| !message.contains(key.as_str()));
+}
 /// When `auction_slot_blocked` is set after exhausting stuck-item retries,
 /// this flag prevents further SellToAuction attempts until it is cleared
 /// (e.g. by a successful ClaimSold cycle that frees the slot).
@@ -2044,6 +2101,8 @@ async fn event_handler(bot: Client, event: Event, state: BotClientState) -> Resu
             let clean_message =
                 crate::bot::handlers::BotEventHandlers::remove_color_codes(&message);
 
+            forget_refunded_sell_offers(&clean_message);
+
             if clean_message.contains("You purchased") && clean_message.contains("coins!") {
                 // "You purchased <item> for <price> coins!"
                 if let Some((item_name, price)) = parse_purchased_message(&clean_message) {
@@ -3574,6 +3633,17 @@ async fn execute_command(bot: &Client, command: &QueuedCommand, state: &BotClien
             // The server may reject the order, but it's better to try
             // (the limit flag may be stale) than to silently drop a sell
             // recommendation that would have freed inventory space.
+            if is_duplicate_sell(item_name, *amount) {
+                // Never goes busy, so the queue completes it after its 250 ms
+                // idle check instead of the old ~5.5 s watchdog round trip.
+                info!(
+                    "[Bazaar] Skipping duplicate SELL {}x \"{}\" — the same offer was set up <{}s ago (items are in escrow)",
+                    amount,
+                    item_name,
+                    DUPLICATE_SELL_WINDOW.as_secs()
+                );
+                return;
+            }
             if state.bazaar_at_limit.load(Ordering::Relaxed) {
                 info!("[Bazaar] Attempting SELL order for \"{}\" despite at_limit flag (sell orders are critical)", item_name);
             }
@@ -4569,6 +4639,9 @@ async fn handle_window_interaction(
                     let price_per_unit = *state.bazaar_price_per_unit.read();
                     let total_value = amount as f64 * price_per_unit;
                     log_bazaar_order_placed(is_buy_order, &item, total_value);
+                    if !is_buy_order {
+                        note_sell_offer_placed(&item, amount);
+                    }
                     let _ = state.event_tx.send(BotEvent::BazaarOrderPlaced {
                         item_name: item,
                         amount,
@@ -9147,6 +9220,60 @@ mod unauctionable_tests {
         assert!(!mark_unauctionable(id), "second mark is a no-op");
         assert!(is_unauctionable(id));
         assert!(!is_unauctionable("test-some-other-item"));
+    }
+}
+
+#[cfg(test)]
+mod duplicate_sell_tests {
+    use super::{
+        forget_refunded_sell_offers, is_duplicate_sell, note_sell_offer_placed, sell_offer_key,
+    };
+
+    #[test]
+    fn key_ignores_colours_icon_glyph_and_case() {
+        assert_eq!(
+            sell_offer_key("\u{e003} §aFine Sapphire Gemstone"),
+            "fine sapphire gemstone"
+        );
+        assert_eq!(
+            sell_offer_key("Enchanted Baked Potato"),
+            "enchanted baked potato"
+        );
+    }
+
+    #[test]
+    fn same_item_and_amount_right_after_setup_is_a_duplicate() {
+        note_sell_offer_placed("\u{e003} Test Dup Gemstone", 28);
+        assert!(is_duplicate_sell("\u{e003} Test Dup Gemstone", 28));
+        assert!(
+            is_duplicate_sell("Test Dup Gemstone", 28),
+            "glyph-free name matches"
+        );
+        assert!(
+            !is_duplicate_sell("Test Dup Gemstone", 29),
+            "different amount is a new sell"
+        );
+        assert!(!is_duplicate_sell("Test Other Gemstone", 28));
+    }
+
+    #[test]
+    fn refund_or_claim_makes_the_item_sellable_again() {
+        note_sell_offer_placed("Test Refund Fragment", 33);
+        forget_refunded_sell_offers("[Bazaar] Putting goods in escrow...");
+        assert!(
+            is_duplicate_sell("Test Refund Fragment", 33),
+            "unrelated chat keeps it"
+        );
+        forget_refunded_sell_offers(
+            "[Bazaar] Cancelled! Refunded 33x Test Refund Fragment from cancelling Sell Offer!",
+        );
+        assert!(!is_duplicate_sell("Test Refund Fragment", 33));
+
+        note_sell_offer_placed("Test Claim Book", 4);
+        forget_refunded_sell_offers(
+            "[Bazaar] Claimed 4x Test Claim Book worth 1,000 coins bought for 250 each!",
+        );
+        assert!(!is_duplicate_sell("Test Claim Book", 4));
     }
 }
 
