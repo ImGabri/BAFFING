@@ -389,6 +389,7 @@ mod tests {
                 purchase_at_ms: None,
                 uuid: Some("abc".into()),
                 list_at: None,
+                received_at: None,
             },
         }
     }

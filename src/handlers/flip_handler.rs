@@ -617,6 +617,7 @@ mod tests {
             purchase_at_ms: None,
             uuid: None,
             list_at: None,
+            received_at: None,
         };
         assert!(!handler.should_skip_flip(&flip, 1000));
 

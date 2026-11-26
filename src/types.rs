@@ -41,6 +41,11 @@ pub struct Flip {
     /// list them first. Never present on COFL flips.
     #[serde(default, rename = "listAt")]
     pub list_at: Option<u64>,
+
+    /// When this flip message arrived on the websocket. Local only (never sent
+    /// or parsed); used to time the bot's own reaction up to `/viewauction`.
+    #[serde(skip)]
+    pub received_at: Option<std::time::Instant>,
 }
 
 /// Read `purchaseAt` out of a RAW json flip, with the same rules as

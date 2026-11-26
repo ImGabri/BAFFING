@@ -3312,6 +3312,18 @@ async fn execute_command(bot: &Client, command: &QueuedCommand, state: &BotClien
 
             send_raw_chat_command(bot, &chat_command);
 
+            // The bot's own reaction time: flip arrived → /viewauction sent.
+            // Everything after this is network + Hypixel, already covered by
+            // the "/viewauction → …" timing lines.
+            if let Some(received_at) = flip.received_at {
+                let reaction = received_at.elapsed();
+                crate::state::reaction_timing::record(reaction);
+                info!(
+                    "[Timing] flip received → /viewauction sent: {:.2}ms",
+                    reaction.as_secs_f64() * 1000.0
+                );
+            }
+
             // Store raw COFL purchaseAt timestamp.  It is only converted to a
             // local Instant later — and only when the auction turns out to be a
             // bed (grace-period) and bedtiming mode is enabled.

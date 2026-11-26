@@ -439,6 +439,8 @@ impl CoflWebSocket {
     }
 
     fn handle_message(text: &str, tx: &mpsc::UnboundedSender<CoflEvent>) -> Result<()> {
+        // Taken first, so flip reaction timing includes our own parsing.
+        let received_at = std::time::Instant::now();
         info!("[COFL <-] {}", text);
 
         // baf-flip-finder protocol: when this socket points at the private
@@ -465,6 +467,7 @@ impl CoflWebSocket {
                         purchase_at_ms: crate::types::purchase_at_from_json(f),
                         uuid: f.get("uuid").and_then(|x| x.as_str()).map(String::from),
                         list_at: f.get("listAt").and_then(|x| x.as_u64()),
+                        received_at: Some(received_at),
                     };
                     if flip.starting_bid > 0 && flip.target > 0 && flip.uuid.is_some() {
                         debug!("Parsed finder flip: {}", flip.item_name);
@@ -516,7 +519,8 @@ impl CoflWebSocket {
                     // but also provides "id" at the top level as the auction UUID.
                     // Promote auction sub-fields to the top level when missing there.
                     let normalized = normalize_flip_value(value);
-                    if let Ok(flip) = serde_json::from_value::<Flip>(normalized) {
+                    if let Ok(mut flip) = serde_json::from_value::<Flip>(normalized) {
+                        flip.received_at = Some(received_at);
                         debug!("Parsed auction flip: {:?}", flip.item_name);
                         let _ = tx.send(CoflEvent::AuctionFlip(flip));
                     }

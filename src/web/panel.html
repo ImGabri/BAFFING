@@ -654,6 +654,7 @@ input[type=number]::-webkit-inner-spin-button{opacity:.35}
             <div class="status-item"><div class="label">Purse</div><div class="value" id="s-purse">—</div></div>
             <div class="status-item"><div class="label">Uptime</div><div class="value" id="s-uptime">—</div></div>
             <div class="status-item"><div class="label">Flips</div><div class="value" id="s-flips" title="">—</div></div>
+            <div class="status-item"><div class="label">Reaction</div><div class="value" id="s-reaction" title="Time from a flip arriving to /viewauction being sent (the part the bot controls; network to Hypixel not included)">—</div></div>
         </div>
         <h3 class="sub-h">Accounts</h3>
         <div class="account-list" id="account-list">
@@ -973,6 +974,17 @@ async function fetchStatus() {
             fEl.textContent = (d.flips_accepted || 0) + ' / ' + (d.flips_dropped || 0) + ' skip';
             fEl.title = d.flip_drop_reason || 'intake healthy';
             fEl.style.color = (d.flips_accepted === 0 && d.flips_dropped > 0) ? 'var(--danger)' : '';
+        }
+        // Bot reaction time: flip received → /viewauction sent.
+        const rEl = $('s-reaction');
+        if (rEl) {
+            const r = d.reaction;
+            const f = v => v < 10 ? v.toFixed(1) : Math.round(v);
+            rEl.textContent = r ? (f(r.p50_ms) + ' ms · p90 ' + f(r.p90_ms)) : '—';
+            rEl.title = r
+                ? 'Flip received → /viewauction sent, last ' + r.samples + ' buys.\nMedian ' + f(r.p50_ms)
+                  + ' ms, p90 ' + f(r.p90_ms) + ' ms, worst ' + f(r.max_ms) + ' ms, last ' + f(r.last_ms) + ' ms.'
+                : 'No buys yet this session.';
         }
         $('tog-anon').checked = d.anonymize_webhook_name;
         isAnonymized = d.anonymize_webhook_name;

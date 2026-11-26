@@ -119,6 +119,8 @@ struct StatusResponse {
     flips_dropped: u64,
     /// Human-readable reason the most recent flip was dropped, if any.
     flip_drop_reason: Option<String>,
+    /// Recent flip-received → `/viewauction`-sent times (None before a buy).
+    reaction: Option<crate::state::reaction_timing::ReactionSummary>,
 }
 
 #[derive(Deserialize)]
@@ -1061,6 +1063,7 @@ async fn get_status(State(s): State<WebSharedState>) -> Json<StatusResponse> {
             .flip_diag
             .last_drop()
             .map(|(r, secs_ago)| format!("{} ({}) — {}s ago", r.as_str(), r.hint(), secs_ago)),
+        reaction: crate::state::reaction_timing::summary(),
     })
 }
 

@@ -1042,6 +1042,7 @@ async fn main() -> Result<()> {
                                             Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => break,
                                             _ => continue,
                                         };
+                                        let received_at = Instant::now();
                                         let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
                                         if v.get("type").and_then(|t| t.as_str()) != Some("flip") {
                                             continue;
@@ -1062,6 +1063,7 @@ async fn main() -> Result<()> {
                                             purchase_at_ms: frikadellen_baf::types::purchase_at_from_json(f),
                                             uuid,
                                             list_at: f.get("listAt").and_then(|x| x.as_u64()),
+                                            received_at: Some(received_at),
                                         };
                                         if flip.starting_bid == 0 || flip.target == 0 {
                                             continue;
@@ -6661,6 +6663,7 @@ mod tests {
                 purchase_at_ms: None,
                 uuid: Some("abc".into()),
                 list_at: None,
+                received_at: None,
             },
         }
     }
@@ -6938,6 +6941,7 @@ mod tests {
             purchase_at_ms: None,
             uuid: Some("uuid-1".to_string()),
             list_at: None,
+            received_at: None,
         };
         // Bought 90 minutes ago and still unsold; plus an offered-but-never-bought
         // flip, which must not be written.
