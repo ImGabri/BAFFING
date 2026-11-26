@@ -7475,6 +7475,11 @@ fn extract_grace_seconds_from_lore(lore: &[String]) -> Option<i64> {
         if let Some(secs) = parse_bed_remaining_secs_from_text(tail) {
             return Some(secs as i64);
         }
+        // Last second of the grace period: Hypixel shows "Can buy in: Soon!"
+        // with no number (seen live 2026-11-26), which logged UNPARSABLE time.
+        if tail.contains("soon") {
+            return Some(1);
+        }
     }
     None
 }
@@ -9547,6 +9552,11 @@ mod tests {
         assert_eq!(
             extract_grace_seconds_from_lore(&live_grace_lore("Can buy in: 05s")),
             Some(5)
+        );
+        // Final second: no number, just "Soon!" (live lore 2026-11-26).
+        assert_eq!(
+            extract_grace_seconds_from_lore(&live_grace_lore("Can buy in: Soon!")),
+            Some(1)
         );
         // The price line must not be read as the countdown.
         assert_eq!(extract_price_from_lore(&lore), Some(15_625_000));
