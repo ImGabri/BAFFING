@@ -13,6 +13,7 @@ pub mod handlers;
 pub mod hypixel_ping;
 pub mod hypixel_status;
 pub mod inventory;
+pub mod local_finder;
 pub mod logging;
 pub mod profit;
 pub mod session;

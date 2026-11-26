@@ -41,6 +41,11 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
+# Local finder: decode Hypixel item_bytes (base64 + gzip + NBT)
+base64 = "0.22"
+flate2 = "1"
+simdnbt = "0.10"
+
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

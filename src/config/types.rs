@@ -125,6 +125,11 @@ pub struct Config {
     #[serde(default)]
     pub finder_report_purse: bool,
 
+    /// Built-in finder: Hypixel AH + SkyAH prices + Coflnet item valuation.
+    /// Configured in the `[local_finder]` section.
+    #[serde(default)]
+    pub local_finder: crate::local_finder::LocalFinderConfig,
+
     /// In finder-only mode COFL never sends createAuction, so nothing lists the
     /// items the bot buys or reclaims from expired auctions. When enabled the
     /// bot uploads its inventory to the finder every minute and lists what the
@@ -658,6 +663,7 @@ impl Default for Config {
             finder_ws_url: None,
             finder_ws_token: None,
             finder_report_purse: false,
+            local_finder: Default::default(),
             finder_auto_list: true,
             // Auto-relist blocklist
             do_not_relist_ids: default_do_not_relist_ids(),

@@ -980,6 +980,30 @@ async fn main() -> Result<()> {
             }
         }
 
+        // ── Built-in local finder (Hypixel AH + SkyAH + Coflnet) ─────────
+        // Same pipeline and UUID dedupe as every other flip source.
+        if config.local_finder.enabled {
+            let (lf_tx, mut lf_rx) = tokio::sync::mpsc::unbounded_channel();
+            frikadellen_baf::local_finder::LocalFinder::spawn(config.local_finder.clone(), lf_tx);
+            let agg_tx = agg_tx.clone();
+            let seen = seen.clone();
+            tokio::spawn(async move {
+                while let Some(ev) = lf_rx.recv().await {
+                    if let CoflEvent::AuctionFlip(ref f) = ev {
+                        if let Some(u) = f.uuid.as_deref() {
+                            if flip_already_seen(&seen, u) {
+                                debug!("[LocalFinder] Duplicate flip {} — dropped", u);
+                                continue;
+                            }
+                        }
+                    }
+                    if agg_tx.send(ev).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
         // ── baf-flip-finder feeds ────────────────────────────────────────
         // Our own finder pushes flips over a plain websocket the instant it
         // finds them. They enter the same pipeline as COFL flips (identical
