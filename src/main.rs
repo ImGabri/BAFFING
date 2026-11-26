@@ -4096,7 +4096,8 @@ async fn main() -> Result<()> {
                             "[Inventory] Uploading to COFL: payload {} bytes",
                             payload_bytes
                         );
-                        info!("[Inventory] uploadInventory payload: {}", inv_json);
+                        info!("[Inventory] uploadInventory: {} bytes", payload_bytes);
+                        debug!("[Inventory] uploadInventory payload: {}", inv_json);
                         let message = serde_json::json!({
                             "type": "uploadInventory",
                             "data": inv_json

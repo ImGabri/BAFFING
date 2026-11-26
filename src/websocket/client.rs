@@ -695,16 +695,30 @@ impl CoflWebSocket {
 
     /// Send a message to the COFL WebSocket
     pub async fn send_message(&self, message: &str) -> Result<()> {
-        if let Some(payload) = extract_upload_inventory_payload(message) {
-            info!("[Inventory] uploadInventory payload: {}", payload);
-            info!("[Inventory] uploadInventory ws message: {}", message);
+        // Full inventory payloads are ~50 KB each; only dump them at debug level
+        // (RUST_LOG=debug). The JSON re-parse is skipped entirely otherwise.
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            if let Some(payload) = extract_upload_inventory_payload(message) {
+                debug!("[Inventory] uploadInventory payload: {}", payload);
+                debug!("[Inventory] uploadInventory ws message: {}", message);
+            }
         }
-        let mut write = self.write.lock().await;
-        write
-            .send(Message::Text(message.to_string()))
-            .await
-            .context("Failed to send message to WebSocket")?;
-        info!("[COFL ->] {}", message);
+        {
+            let mut write = self.write.lock().await;
+            write
+                .send(Message::Text(message.to_string()))
+                .await
+                .context("Failed to send message to WebSocket")?;
+        } // release the write lock before logging
+        if message.len() > LOG_PREVIEW_CHARS && !tracing::enabled!(tracing::Level::DEBUG) {
+            info!(
+                "[COFL ->] {}… ({} bytes, full text at RUST_LOG=debug)",
+                log_preview(message),
+                message.len()
+            );
+        } else {
+            info!("[COFL ->] {}", message);
+        }
         debug!("Sent WS message ({} bytes)", message.len());
         Ok(())
     }
@@ -923,6 +937,17 @@ fn extract_license_tier(text: &str) -> String {
         }
     }
     LICENSE_TIER_NONE.to_string()
+}
+
+/// Longest outgoing message logged in full at info level.
+pub(crate) const LOG_PREVIEW_CHARS: usize = 300;
+
+/// First `LOG_PREVIEW_CHARS` characters of `s`, cut on a char boundary.
+pub(crate) fn log_preview(s: &str) -> &str {
+    match s.char_indices().nth(LOG_PREVIEW_CHARS) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
 }
 
 fn extract_upload_inventory_payload(message: &str) -> Option<String> {
@@ -1173,6 +1198,20 @@ mod tests {
 
     fn handle_message_for_test(text: &str, tx: &mpsc::UnboundedSender<CoflEvent>) {
         CoflWebSocket::handle_message(text, tx).expect("message parses");
+    }
+
+    #[test]
+    fn log_preview_keeps_short_messages_whole() {
+        assert_eq!(log_preview("{\"type\":\"set\"}"), "{\"type\":\"set\"}");
+    }
+
+    #[test]
+    fn log_preview_cuts_long_messages_on_a_char_boundary() {
+        // Multi-byte chars (✪ is 3 bytes, § is 2) must never be split.
+        let long = "✪§a".repeat(LOG_PREVIEW_CHARS);
+        let cut = log_preview(&long);
+        assert_eq!(cut.chars().count(), LOG_PREVIEW_CHARS);
+        assert!(long.starts_with(cut));
     }
 
     #[test]
